@@ -111,6 +111,15 @@ function abrirUrl(url) {
     if (permitido) window.open(url, '_blank', 'noopener');
 }
 
+// IPv4 estrito (cada parte 0–255): só um IP de verdade vira link para o roteador.
+const IPV4_VALIDO = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+
+/** Abre a interface web do roteador do cliente (http://IP/) numa guia nova. Só aceita IPv4 válido. */
+function abrirRoteador(ip) {
+    const v = String(ip || '').trim();
+    if (IPV4_VALIDO.test(v)) window.open(`http://${v}/`, '_blank', 'noopener');
+}
+
 const urlConexao = id => `${AMIGO_ORIGEM}/pt/network-documentation/connection/${encodeURIComponent(id)}/view`;
 
 /** Número do ticket da URL (/agent/tickets/12345). */
@@ -254,6 +263,8 @@ svg { display: block; flex: none; }
 .metrica { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
 .metrica .rot { color: var(--rotulo); font-weight: var(--rotulo-peso); font-size: .857em; white-space: nowrap; }
 .metrica .val { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ip-acesso { display: flex; justify-content: flex-end; margin-top: -2px; }
+.ip-acesso:empty { display: none; }
 .motivo { font-size: .857em; color: var(--suave); }
 
 .secao { border-top: 1px solid var(--divisor); }
@@ -964,6 +975,7 @@ function criarPainelTicket(campoEl) {
     // Mensagens do "Print na observação interna" (fica fora do redesenho da seção ONU).
     const elPrintMsg = h('div', { class: 'print-msg' });
     let elIp = null, elIpRotulo = null; // linha "IP" dos indicadores (preenchida com AutoISP ou Amigo)
+    let elIpAcesso = null;              // linha logo abaixo do IP: "Acessar roteador"
     let elAbordagem = null;    // linha de etiquetas da Abordagem
     let elAbordUrgente = null; // faixa vermelha "Abordagem incompleta" (topo do painel)
     // Voltou da Amigo depois de abrir a edição preenchida: confere de novo (talvez já tenha salvado).
@@ -1116,6 +1128,7 @@ function criarPainelTicket(campoEl) {
                 : linha('Sessão desde', d.sessaoInicio),
             // IP: do AutoISP quando disponível (mais confiável); atualizado quando a ONU responder.
             h('div', { class: 'metrica' }, elIpRotulo = h('span', { class: 'rot' }, 'IP atual'), elIp = h('span', { class: 'val' })),
+            elIpAcesso = h('div', { class: 'ip-acesso' }),
             linha('Contrato', d.contrato ? badge(d.contrato, tipoContrato(d.contrato, c.ativo)) : ''),
             h('div', { class: 'motivo' }, d.motivo));
 
@@ -1429,6 +1442,15 @@ function criarPainelTicket(campoEl) {
             ? h('span', { class: 'mono', title: ipAutoIsp ? 'IP da sessão no AutoISP' : 'IP informado pela Amigo' }, ip,
                 h('span', { class: 'un', style: 'font-family:inherit' }, ipAutoIsp ? ' AutoISP' : ' Amigo'))
             : h('span', { class: 'vazio' }, '—'));
+        // Logo abaixo do IP: abre o roteador do cliente (http://IP/) numa guia nova.
+        if (elIpAcesso) {
+            elIpAcesso.replaceChildren(...(IPV4_VALIDO.test(ip) ? [link('Acessar roteador', {
+                titulo: encerrada
+                    ? `Abre http://${ip} numa guia nova (atenção: sessão encerrada, o IP pode ter mudado)`
+                    : `Abre http://${ip} numa guia nova para acessar o roteador do cliente`,
+                onclick: () => abrirRoteador(ip)
+            })] : []));
+        }
     }
 
     /**

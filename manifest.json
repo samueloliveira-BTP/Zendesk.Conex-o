@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Assistente de Diagnóstico Zendesk",
-  "version": "6.9.0",
+  "version": "6.9.1",
   "description": "Diagnóstico de conexões no Zendesk com dados da Plataforma Amigo e da ONU (AutoISP)",
   "permissions": [
     "storage",
