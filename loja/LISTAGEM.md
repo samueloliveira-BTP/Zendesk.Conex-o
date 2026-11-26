@@ -58,6 +58,7 @@ do cliente (dados da Plataforma Amigo e do AutoISP), com atalhos para as ferrame
 
 **Uso de dados — marcar:**
 - [x] Informações de identificação pessoal (nome/contrato do cliente exibidos ao atendente)
+- [x] Informações de autenticação (usuário/senha do equipamento do cliente, exibidos — nunca guardados nem enviados)
 - [x] Local (endereço IP da conexão do cliente)
 - [x] Conteúdo do site (dados lidos das páginas da Amigo/AutoISP/Zendesk)
 - [ ] todas as outras categorias: **não**

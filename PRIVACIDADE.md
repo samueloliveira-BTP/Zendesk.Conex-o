@@ -20,6 +20,10 @@ já tem aberta** nos sistemas da empresa:
   abordagem) e o nome/contrato do cliente.
 - **AutoISP:** dados técnicos da ONU (status, sinal, quedas, OLT, slot/porta).
 
+O **usuário e a senha do equipamento do cliente** (roteador), cadastrados na Plataforma Amigo, são exibidos
+ao atendente no painel (senha oculta até ele clicar para ver), para o suporte técnico. A extensão **não guarda
+nem envia** esses dados para lugar nenhum.
+
 ## O que a extensão faz com esses dados
 
 - Mostra as informações ao atendente, no painel do ticket.
