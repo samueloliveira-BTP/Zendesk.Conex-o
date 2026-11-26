@@ -14,7 +14,6 @@
  *  - fabricanteMac      → fabricante pelo prefixo OUI (com cache e fila de 1 req/s)
  *  - abordagem          → confere a Abordagem da Amigo (Tecnologia, Slot/Porta OLT, ID ONU) com o AutoISP — só leitura, nunca grava
  *  - testarPortas / ativarRedeLocal / redeLocalAtivada → teste de portas do roteador (lista do NMAP da equipe)
- *  - statusAtualizacao  → versão nova publicada no GitHub (aviso no painel; ver "Aviso de versão nova")
  *  - abrirAbordagemPreenchida / preencherTarefa → abre a edição da Amigo já preenchida (o atendente é quem salva)
  *  - ipOlt              → IP da OLT (AutoISP pelo ID da OLT; reserva: Amigo, Ativos de Rede pelo nome do uPE)
  *  - printAutoIsp       → print da página da ONU no AutoISP (aba em segundo plano; ver "Print" abaixo)
@@ -145,93 +144,18 @@ async function testarPortasRoteador(ip) {
 }
 
 // ==========================================
-// Aviso de versão nova (GitHub Releases)
+// Atualizações
 // ==========================================
 //
-// A extensão é instalada "sem compactação" (fora da Chrome Web Store), então o Chrome não a atualiza sozinho.
-// Uma vez por dia (chrome.alarms) consulta a última release pública do repositório e compara com a versão
-// instalada. Havendo versão nova: "NEW" no ícone, aviso no painel do Zendesk e o clique no ícone abre o download.
-// Repositório público: a API do GitHub responde sem login (nenhum token na extensão).
-
-const REPO_GITHUB = 'samueloliveira-BTP/Zendesk.Conex-o';
-const URL_RELEASE_API = `https://api.github.com/repos/${REPO_GITHUB}/releases/latest`;
-const ORIGEM_DOWNLOAD = `https://github.com/${REPO_GITHUB}/`; // links aceitos (release ou .zip anexado)
-const ALARME_ATUALIZACAO = 'verificar-atualizacao';
-const INTERVALO_ATUALIZACAO_MIN = 24 * 60;
-
-/** "v6.9.0" / "6.9" → [6, 9, 0]; null se não for versão numérica. */
-function partesVersao(texto) {
-    const m = /^v?(\d{1,5}(?:\.\d{1,5}){0,3})$/i.exec(String(texto || '').trim());
-    return m ? m[1].split('.').map(Number) : null;
+// Desde a v6.11.0 a extensão é distribuída pela Chrome Web Store (visibilidade particular, só contas
+// @brasiltecpar.com.br): o próprio Chrome atualiza. O antigo aviso de versão nova pelo GitHub foi removido;
+// ao instalar/atualizar, apagamos o que ele deixou (badge "NEW" e storage). O alarme antigo não dispara mais
+// nada (a permissão "alarms" saiu do manifest).
+async function limparAvisoAntigoDeVersao() {
+    await chrome.storage.local.remove('atualizacao').catch(() => {});
+    await chrome.action.setBadgeText({ text: '' }).catch(() => {});
+    await chrome.action.setTitle({ title: 'Assistente de Diagnóstico Zendesk' }).catch(() => {});
 }
-
-/** >0 se a > b, <0 se a < b, 0 se iguais (partes faltando valem 0: "6.9" = "6.9.0"). */
-function compararVersoes(a, b) {
-    const pa = partesVersao(a) || [], pb = partesVersao(b) || [];
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-        const d = (pa[i] || 0) - (pb[i] || 0);
-        if (d) return d;
-    }
-    return 0;
-}
-
-async function marcarAtualizacao(info) {
-    if (info) {
-        await chrome.storage.local.set({ atualizacao: info });
-        await chrome.action.setBadgeText({ text: 'NEW' });
-        await chrome.action.setBadgeBackgroundColor({ color: '#d92d20' });
-        await chrome.action.setTitle({ title: `Nova versão ${info.versao} disponível — clique para baixar` });
-    } else {
-        await chrome.storage.local.remove('atualizacao');
-        await chrome.action.setBadgeText({ text: '' });
-        await chrome.action.setTitle({ title: 'Assistente de Diagnóstico Zendesk' });
-    }
-}
-
-/** Consulta a última release. Falha de rede/limite da API: mantém o que já se sabia e tenta no próximo dia. */
-async function verificarAtualizacao() {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
-    try {
-        const resp = await fetch(URL_RELEASE_API, {
-            signal: ctrl.signal, credentials: 'omit', cache: 'no-store',
-            headers: { Accept: 'application/vnd.github+json' }
-        });
-        if (resp.status === 404) return marcarAtualizacao(null); // ainda não há release publicada
-        if (!resp.ok) return;
-        const rel = await resp.json();
-        const versao = String(rel && rel.tag_name || '').trim().replace(/^v/i, '');
-        const atual = chrome.runtime.getManifest().version;
-        if (!partesVersao(versao) || rel.draft || rel.prerelease || compararVersoes(versao, atual) <= 0) {
-            return marcarAtualizacao(null);
-        }
-        // Prefere o .zip anexado à release; senão a página da release. Só links do próprio repositório.
-        const zip = (Array.isArray(rel.assets) ? rel.assets : [])
-            .map(a => a && a.browser_download_url).find(u => typeof u === 'string' && /\.zip$/i.test(u) && u.startsWith(ORIGEM_DOWNLOAD));
-        const pagina = typeof rel.html_url === 'string' && rel.html_url.startsWith(ORIGEM_DOWNLOAD) ? rel.html_url : `${ORIGEM_DOWNLOAD}releases/latest`;
-        await marcarAtualizacao({ versao, url: zip || pagina, pagina, em: Date.now() });
-    } catch (e) {
-        // sem rede / GitHub fora: tenta de novo no próximo alarme
-    } finally {
-        clearTimeout(timer);
-    }
-}
-
-function agendarVerificacao() {
-    chrome.alarms.create(ALARME_ATUALIZACAO, { delayInMinutes: 1, periodInMinutes: INTERVALO_ATUALIZACAO_MIN });
-}
-
-chrome.alarms.onAlarm.addListener(a => { if (a.name === ALARME_ATUALIZACAO) verificarAtualizacao(); });
-chrome.runtime.onStartup.addListener(() => { agendarVerificacao(); verificarAtualizacao(); });
-
-// Clique no ícone: abre o download da versão nova (sem versão nova, a página das releases).
-chrome.action.onClicked.addListener(async () => {
-    const { atualizacao } = await chrome.storage.local.get('atualizacao');
-    const url = atualizacao && typeof atualizacao.url === 'string' && atualizacao.url.startsWith(ORIGEM_DOWNLOAD)
-        ? atualizacao.pagina || atualizacao.url
-        : `${ORIGEM_DOWNLOAD}releases`;
-    chrome.tabs.create({ url });
-});
 
 // Abordagem: páginas de edição da Amigo abertas para o atendente completar (token → {idConexao, preencher, tabId}).
 const VALIDADE_PREENCHIMENTO_MS = 2 * 60 * 1000;
@@ -431,14 +355,6 @@ const handlers = {
         return {};
     },
 
-    /** Versão nova disponível (para o aviso no painel do Zendesk); null se a instalada é a mais recente. */
-    async statusAtualizacao() {
-        const { atualizacao } = await chrome.storage.local.get('atualizacao');
-        const atual = chrome.runtime.getManifest().version;
-        if (!atualizacao || compararVersoes(atualizacao.versao, atual) <= 0) return { data: null };
-        return { data: { versao: atualizacao.versao, atual, url: atualizacao.url } };
-    },
-
     /** A aba da Amigo pede os valores (uma vez só, e só a aba que a extensão abriu). */
     async preencherTarefa({ token }, sender) {
         const p = typeof token === 'string' ? preenchimentos.get(token) : null;
@@ -454,9 +370,7 @@ const handlers = {
 chrome.runtime.onInstalled.addListener(() => {
     chrome.storage.local.remove(['config', 'painelRecolhido', 'secoesAbertas']).catch(() => {});
     chrome.storage.session.remove('acesso').catch(() => {});
-    // Instalou/atualizou: agenda a verificação diária e já confere (limpa o "NEW" se esta já é a versão nova).
-    agendarVerificacao();
-    verificarAtualizacao();
+    limparAvisoAntigoDeVersao();
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

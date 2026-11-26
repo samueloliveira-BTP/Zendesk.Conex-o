@@ -30,8 +30,6 @@
 const AMIGO_ORIGEM = 'https://plataforma.sejaamigo.com.br';
 const AUTOISP_ORIGEM = 'https://autoisp.brasiltecpar.com.br';
 const ZABBIX_ORIGEM = 'https://zbx7.brasiltecpar.com.br';
-// Downloads de versões novas da extensão (releases públicas do repositório no GitHub).
-const GITHUB_REPO_URL = 'https://github.com/samueloliveira-BTP/Zendesk.Conex-o/';
 /** Busca do Zabbix por um IP (mesma URL da busca da barra lateral do Zabbix). */
 const urlZabbixIp = ip => `${ZABBIX_ORIGEM}/zabbix.php?action=search&search=${encodeURIComponent(ip)}`;
 // Busca do cliente no AutoISP pela etiqueta (usuário PPPoE), só conexões ativas.
@@ -105,9 +103,9 @@ function h(tag, props = {}, ...filhos) {
 
 const vazio = v => v === null || v === undefined || v === '' || v === '-' || v === 'N/A';
 
-/** Abre URL em nova aba somente se pertencer a uma origem conhecida (Amigo, AutoISP, Zabbix ou o repositório). */
+/** Abre URL em nova aba somente se pertencer a uma origem conhecida (Amigo, AutoISP ou Zabbix). */
 function abrirUrl(url) {
-    const permitido = [AMIGO_ORIGEM + '/', AUTOISP_ORIGEM + '/', ZABBIX_ORIGEM + '/', GITHUB_REPO_URL].some(o => String(url).startsWith(o));
+    const permitido = [AMIGO_ORIGEM + '/', AUTOISP_ORIGEM + '/', ZABBIX_ORIGEM + '/'].some(o => String(url).startsWith(o));
     if (permitido) window.open(url, '_blank', 'noopener');
 }
 
@@ -300,9 +298,6 @@ svg { display: block; flex: none; }
 /* Abordagem (Amigo × AutoISP): uma linha de etiquetas, só para visualizar. */
 .abord { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 10px 8px; border-top: 1px solid var(--divisor); }
 .abord:empty { display: none; }
-.atualizacao { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; padding: 6px 10px;
-  border: 1px dashed var(--divisor); border-radius: 4px; font-size: .857em; color: var(--suave); }
-.atualizacao:empty { display: none; }
 .print-msg { margin-top: 8px; }
 .print-msg:empty { display: none; }
 .abord-rot { margin-right: 2px; text-transform: uppercase; letter-spacing: .04em; color: var(--suave); font-weight: 700; font-size: .75em; }
@@ -936,15 +931,6 @@ function criarBuscaSplitter({ aoCancelar, etiquetaAtual }) {
     return s.el;
 }
 
-/** Versão nova da extensão (uma consulta por carregamento da página; o service worker guarda o resultado). */
-let promessaAtualizacao = null;
-function atualizacaoDisponivel() {
-    if (!promessaAtualizacao) {
-        promessaAtualizacao = enviarMensagem({ action: 'statusAtualizacao' }).then(r => r.data).catch(() => null);
-    }
-    return promessaAtualizacao;
-}
-
 // ==========================================
 // 4. PAINEL DE UM TICKET
 // ==========================================
@@ -1014,19 +1000,10 @@ function criarPainelTicket(campoEl) {
         h('div', { class: 'cab' }, h('span', { class: 'titulo' }, 'Conexão (Amigo)'), elResumo),
         elSub, elLinks, elAvisos, corpo, sOnu.el);
     const busca = criarBuscaSplitter({ aoCancelar, etiquetaAtual: () => estado.etiqueta || '' });
-    // Aviso discreto de versão nova da extensão (verificada 1x/dia pelo service worker no GitHub).
-    const elAtualizacao = h('div', { class: 'atualizacao' });
-    atualizacaoDisponivel().then(a => {
-        if (!a || estado.destruido) return;
-        elAtualizacao.replaceChildren(
-            h('span', {}, `Nova versão da extensão: ${a.versao} (você usa ${a.atual}).`),
-            link('Baixar', { titulo: 'Abre o download da versão nova no GitHub', onclick: () => abrirUrl(a.url) }));
-    });
     const raiz = h('div', { class: 'raiz' },
         h('div', { class: 'barra' }, btnAtualizar, info),
         cartao,
-        h('div', { class: 'cartao' }, busca),
-        elAtualizacao);
+        h('div', { class: 'cartao' }, busca));
     shadow.append(raiz);
     campoEl.insertAdjacentElement('afterend', host);
 

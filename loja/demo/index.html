@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demonstração — Assistente de Diagnóstico</title>
+<link rel="stylesheet" href="/demo.css">
+</head>
+<body>
+  <!-- Layout genérico de ticket, só para a demonstração. Todos os dados são fictícios. -->
+  <header class="topo">
+    <span class="aba ativa">#123456 Sem internet desde a manhã</span>
+    <span class="aba">#123455 Lentidão no Wi-Fi</span>
+    <span class="selo">DEMONSTRAÇÃO · dados fictícios</span>
+  </header>
+  <main class="area">
+    <aside class="lateral" data-test-id="ticket-123456-sidebar">
+      <div class="campo">
+        <label>Solicitante</label>
+        <input value="Cliente Demonstração" readonly>
+      </div>
+      <div class="campo">
+        <label>Formulário</label>
+        <input value="Suporte técnico" readonly>
+      </div>
+      <div class="campo" data-test-id="ticket-form-field-text-field-42732442326804">
+        <label>Etiqueta do cliente</label>
+        <input value="DEMO-0001" readonly>
+      </div>
+    </aside>
+    <section class="conversa">
+      <h1>Sem internet desde a manhã</h1>
+      <article class="msg">
+        <div class="autor">Cliente Demonstração <span>· hoje 08:02</span></div>
+        <p>Bom dia! Minha internet caiu durante a noite e voltou, mas o Wi-Fi está instável. Podem verificar?</p>
+      </article>
+      <article class="msg interna">
+        <div class="autor">Atendente <span>· nota interna · hoje 08:15</span></div>
+        <p>Painel do Assistente: conexão online, sinal da ONU bom, última queda por falta de energia.</p>
+      </article>
+    </section>
+  </main>
+  <script src="/dados-ficticios.js"></script>
+  <script src="/content-demo.js"></script>
+  <script>
+    // ?rolar=N → depois que o painel carrega, rola a coluna lateral N px (para o print da seção ONU).
+    (function () {
+      var n = Number(new URLSearchParams(location.search).get('rolar')) || 0;
+      if (n) setTimeout(function () { document.querySelector('.lateral').scrollTop = n; }, 3500);
+    })();
+  </script>
+</body>
+</html>
