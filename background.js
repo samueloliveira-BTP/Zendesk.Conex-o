@@ -13,6 +13,7 @@
  *  - statusConexao      → "Status da Conexão" (RADIUS) de uma conexão (verificação em massa do splitter; prioridade baixa)
  *  - fabricanteMac      → fabricante pelo prefixo OUI (com cache e fila de 1 req/s)
  *  - abordagem          → confere a Abordagem da Amigo (Tecnologia, Slot/Porta OLT, ID ONU) com o AutoISP — só leitura, nunca grava
+ *  - testarPortas / ativarRedeLocal / redeLocalAtivada → teste de portas do roteador (lista do NMAP da equipe)
  *  - statusAtualizacao  → versão nova publicada no GitHub (aviso no painel; ver "Aviso de versão nova")
  *  - abrirAbordagemPreenchida / preencherTarefa → abre a edição da Amigo já preenchida (o atendente é quem salva)
  *  - ipOlt              → IP da OLT (AutoISP pelo ID da OLT; reserva: Amigo, Ativos de Rede pelo nome do uPE)
@@ -83,6 +84,65 @@ chrome.tabs.onRemoved.addListener(tabId => {
         }
     }
 });
+
+// ==========================================
+// Teste de portas do roteador do cliente (versão "de navegador" do NMAP da equipe)
+// ==========================================
+//
+// Lista do NMAP usado pela equipe (nmap -sT -sV -p 22,23,80,291,443,801,807,1079,1080-1090,2804,6080,8080,
+// 8090,8291-8292,61200,49665,33777,9898,8083,8081,9001,8888,8991,8288,8088,8188,8082,61203,65493,44055,42220).
+// Roda AQUI (service worker): a página do Zendesk é HTTPS e o Chrome bloqueia http://IP a partir dela
+// ("Mixed Content", visto em 26/11/2026). O Chrome 158+ ainda exige a permissão "Acesso à rede local" para a
+// extensão: ela é pedida UMA vez pela janela rede-local.html (o service worker não pode mostrar o aviso).
+// Limites do navegador: 22/23 bloqueadas ("não testável"); porta aberta que não fala HTTP (Winbox 8291)
+// parece fechada; HTTPS com certificado próprio = "inconclusiva"; sem -sV. Só o IPv4 do cliente do ticket.
+
+const PORTAS_ROTEADOR = [
+    80, 8080, 8081, 8082, 8083, 8088, 8090, 8188, 8288, 8888, 8991, 9001, 9898, 6080, 2804, 291, 801, 807,
+    443, 1079, 1080, 1081, 1082, 1083, 1084, 1085, 1086, 1087, 1088, 1089, 1090, 8291, 8292,
+    33777, 42220, 44055, 49665, 61200, 61203, 65493, 22, 23
+];
+const PORTAS_BLOQUEADAS_CHROME = new Set([22, 23]);
+const PORTAS_HTTPS = new Set([443]);
+const TEMPO_PORTA_MS = 3000;
+const PARALELO_PORTAS = 8;
+const IPV4_ROTEADOR = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+const cachePortas = new Map(); // ip → {em, valor} (5 min)
+
+/** Permissão "Acesso à rede local" da extensão: granted | prompt | denied | indisponivel (Chrome sem a proteção). */
+async function permissaoRedeLocal() {
+    try { return (await navigator.permissions.query({ name: 'local-network-access' })).state; } catch (e) { return 'indisponivel'; }
+}
+
+async function testarPorta(ip, porta) {
+    if (PORTAS_BLOQUEADAS_CHROME.has(porta)) return { porta, estado: 'nao-testavel' };
+    const esquema = PORTAS_HTTPS.has(porta) ? 'https' : 'http';
+    const url = `${esquema}://${ip}:${porta}/`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TEMPO_PORTA_MS);
+    const t0 = Date.now();
+    try {
+        // Resposta opaca: nada da página do roteador é lido, só se um servidor web respondeu.
+        await fetch(url, { mode: 'no-cors', credentials: 'omit', cache: 'no-store', signal: ctrl.signal, targetAddressSpace: 'local' });
+        return { porta, estado: 'aberta', url: porta === 80 ? `http://${ip}/` : url, ms: Date.now() - t0 };
+    } catch (e) {
+        if (ctrl.signal.aborted) return { porta, estado: 'sem-resposta', ms: Date.now() - t0 };
+        const erro = String((e && e.message) || e || '').slice(0, 160);
+        return { porta, estado: esquema === 'https' ? 'inconclusiva' : 'fechada', ms: Date.now() - t0, erro };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function testarPortasRoteador(ip) {
+    const fila = [...PORTAS_ROTEADOR];
+    const portas = [];
+    await Promise.all(Array.from({ length: PARALELO_PORTAS }, async () => {
+        while (fila.length) portas.push(await testarPorta(ip, fila.shift()));
+    }));
+    const ordem = new Map(PORTAS_ROTEADOR.map((p, i) => [p, i]));
+    return portas.sort((a, b) => ordem.get(a.porta) - ordem.get(b.porta));
+}
 
 // ==========================================
 // Aviso de versão nova (GitHub Releases)
@@ -326,6 +386,49 @@ const handlers = {
         if (!tab) { preenchimentos.delete(token); throw new ErroAmigo('Não foi possível abrir a página da Amigo.', 'ABA'); }
         p.tabId = tab.id;
         return { preencher: plano.preencher };
+    },
+
+    /**
+     * Teste das portas do roteador do cliente. Testa SEMPRE: no service worker a consulta da permissão de rede
+     * local pode continuar "prompt" mesmo com a permissão dada (visto em 26/11/2026), então ela só serve de
+     * dica para o painel quando nenhuma porta responde. Cache de 5 min por IP.
+     */
+    async testarPortas({ ip, forcar }) {
+        const v = String(ip || '').trim();
+        if (!IPV4_ROTEADOR.test(v)) throw new ErroAmigo('IP inválido.', 'ENTRADA');
+        const permissao = await permissaoRedeLocal();
+        const salvo = cachePortas.get(v);
+        if (forcar !== true && salvo && Date.now() - salvo.em < 5 * 60 * 1000) return { data: salvo.valor };
+        const t0 = Date.now();
+        const portas = await testarPortasRoteador(v);
+        const valor = { ip: v, permissao, portas, duracaoMs: Date.now() - t0 };
+        cachePortas.set(v, { em: Date.now(), valor });
+        if (cachePortas.size > 100) cachePortas.delete(cachePortas.keys().next().value);
+        return { data: valor };
+    },
+
+    /** Abre a janelinha rede-local.html, onde o Chrome pede UMA vez a permissão "Acesso à rede local". */
+    async ativarRedeLocal({ ip }) {
+        const v = String(ip || '').trim();
+        if (!IPV4_ROTEADOR.test(v)) throw new ErroAmigo('IP inválido.', 'ENTRADA');
+        await chrome.windows.create({
+            url: chrome.runtime.getURL(`rede-local.html?ip=${encodeURIComponent(v)}`),
+            type: 'popup', width: 520, height: 300, focused: true
+        });
+        return {};
+    },
+
+    /** Diagnóstico da janelinha: a porta 80 do IP, testada daqui (service worker), com o erro do Chrome. */
+    async diagnosticoPorta80({ ip }) {
+        const v = String(ip || '').trim();
+        if (!IPV4_ROTEADOR.test(v)) throw new ErroAmigo('IP inválido.', 'ENTRADA');
+        return { data: await testarPorta(v, 80) };
+    },
+
+    /** Aviso da janelinha de que a permissão foi dada (o painel reconfere sozinho). */
+    async redeLocalAtivada() {
+        cachePortas.clear();
+        return {};
     },
 
     /** Versão nova disponível (para o aviso no painel do Zendesk); null se a instalada é a mais recente. */

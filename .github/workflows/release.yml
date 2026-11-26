@@ -51,7 +51,7 @@ jobs:
       - name: Montar o .zip só com os arquivos da extensão
         run: |
           mkdir -p pacote dist
-          cp manifest.json background.js content.js amigo-core.js pacote/
+          cp manifest.json background.js content.js amigo-core.js rede-local.html rede-local.js pacote/
           cp -r lib pacote/
           if [ -d icons ]; then cp -r icons pacote/; fi
           ZIP="dist/assistente-diagnostico-zendesk-${TAG}.zip"
@@ -64,8 +64,10 @@ jobs:
           node -e '
             const fs = require("fs"), path = require("path");
             const m = JSON.parse(fs.readFileSync("pacote/manifest.json", "utf8"));
+            // Páginas abertas pelo código (chrome.runtime.getURL) também precisam estar no .zip.
             const usados = [m.background && m.background.service_worker,
-              ...(m.content_scripts || []).flatMap(c => c.js || [])].filter(Boolean);
+              ...(m.content_scripts || []).flatMap(c => c.js || []),
+              "rede-local.html", "rede-local.js"].filter(Boolean);
             const faltando = usados.filter(f => !fs.existsSync(path.join("pacote", f)));
             if (faltando.length) { console.error("Faltando no .zip:", faltando.join(", ")); process.exit(1); }
             console.log("OK:", usados.join(", "));

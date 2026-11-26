@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ativar teste de portas</title>
+<style>
+  :root { color-scheme: light dark; --fundo: #ffffff; --texto: #1f2d3d; --suave: #5f6b7a; --ok: #038153; --erro: #cc3340; }
+  @media (prefers-color-scheme: dark) { :root { --fundo: #1e2328; --texto: #e9ebed; --suave: #a7adb3; --ok: #26bd8a; --erro: #f5656f; } }
+  body { margin: 0; padding: 18px 20px; background: var(--fundo); color: var(--texto); font: 14px/1.5 "Segoe UI", Arial, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 16px; }
+  p { margin: 6px 0; }
+  .suave { color: var(--suave); font-size: 13px; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .erro { color: var(--erro); font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>Assistente de Diagnóstico — teste de portas</h1>
+  <p id="msg">Clique em <strong>Permitir</strong> no aviso do Chrome ("acessar dispositivos na rede local").</p>
+  <p class="suave">É só desta vez: o Chrome guarda a permissão e o teste de portas passa a rodar sozinho nos tickets.</p>
+  <ul id="diag" class="suave"></ul>
+  <script src="rede-local.js"></script>
+</body>
+</html>

@@ -114,10 +114,10 @@ function abrirUrl(url) {
 // IPv4 estrito (cada parte 0–255): só um IP de verdade vira link para o roteador.
 const IPV4_VALIDO = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
 
-/** Abre a interface web do roteador do cliente (http://IP/) numa guia nova. Só aceita IPv4 válido. */
-function abrirRoteador(ip) {
-    const v = String(ip || '').trim();
-    if (IPV4_VALIDO.test(v)) window.open(`http://${v}/`, '_blank', 'noopener');
+/** Abre a interface web do roteador do cliente numa guia nova. Só aceita http(s)://IPv4[:porta]/. */
+function abrirRoteador(url) {
+    const m = /^(https?):\/\/([\d.]+)(?::(\d{1,5}))?\/$/.exec(String(url || ''));
+    if (m && IPV4_VALIDO.test(m[2]) && (!m[3] || Number(m[3]) <= 65535)) window.open(url, '_blank', 'noopener');
 }
 
 const urlConexao = id => `${AMIGO_ORIGEM}/pt/network-documentation/connection/${encodeURIComponent(id)}/view`;
@@ -263,7 +263,9 @@ svg { display: block; flex: none; }
 .metrica { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
 .metrica .rot { color: var(--rotulo); font-weight: var(--rotulo-peso); font-size: .857em; white-space: nowrap; }
 .metrica .val { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ip-acesso { display: flex; justify-content: flex-end; margin-top: -2px; }
+.ip-acesso { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 8px; margin-top: -2px; font-size: .857em; }
+.ip-acesso .portas-ok { color: var(--ok); font-weight: 600; cursor: help; }
+.ip-acesso .portas-nao { color: var(--suave); cursor: help; }
 .ip-acesso:empty { display: none; }
 .motivo { font-size: .857em; color: var(--suave); }
 
@@ -981,6 +983,14 @@ function criarPainelTicket(campoEl) {
     // Voltou da Amigo depois de abrir a edição preenchida: confere de novo (talvez já tenha salvado).
     let ultimaReconferencia = 0;
     window.addEventListener('focus', () => {
+        // Voltou da janelinha "Ativar teste de portas": testa de novo o IP que aguardava a permissão.
+        if (!estado.destruido && estado.portasAguardandoPermissao && elIpAcesso) {
+            const ip = estado.portasAguardandoPermissao;
+            estado.portasAguardandoPermissao = null;
+            testarPortasRoteador(ip, false, true);
+        }
+    });
+    window.addEventListener('focus', () => {
         if (estado.destruido || !estado.abordPendente || Date.now() - ultimaReconferencia < 4000) return;
         ultimaReconferencia = Date.now();
         carregarAbordagem(true);
@@ -1442,14 +1452,94 @@ function criarPainelTicket(campoEl) {
             ? h('span', { class: 'mono', title: ipAutoIsp ? 'IP da sessão no AutoISP' : 'IP informado pela Amigo' }, ip,
                 h('span', { class: 'un', style: 'font-family:inherit' }, ipAutoIsp ? ' AutoISP' : ' Amigo'))
             : h('span', { class: 'vazio' }, '—'));
-        // Logo abaixo do IP: abre o roteador do cliente (http://IP/) numa guia nova.
+        // Logo abaixo do IP: teste das portas do roteador (lista do NMAP da equipe) e link para acessar.
         if (elIpAcesso) {
-            elIpAcesso.replaceChildren(...(IPV4_VALIDO.test(ip) ? [link('Acessar roteador', {
-                titulo: encerrada
-                    ? `Abre http://${ip} numa guia nova (atenção: sessão encerrada, o IP pode ter mudado)`
-                    : `Abre http://${ip} numa guia nova para acessar o roteador do cliente`,
-                onclick: () => abrirRoteador(ip)
-            })] : []));
+            // Só com sessão ATIVA: o "Último IP" de uma conexão desconectada pode já ser de outro cliente,
+            // então não testa portas nem oferece "Acessar roteador" (pedido do usuário em 26/11/2026).
+            if (!IPV4_VALIDO.test(ip) || encerrada) { elIpAcesso.replaceChildren(); return; }
+            if (estado.portas && estado.portas.ip === ip) renderPortas(estado.portas, encerrada);
+            else if (estado.portasPedido !== ip) testarPortasRoteador(ip, encerrada, false);
+        }
+    }
+
+    // ---------- Teste de portas do roteador ----------
+    // Roda sozinho quando o IP aparece (uma vez por IP; o service worker guarda 5 min). Mostra se o roteador
+    // responde por web e em qual porta; o link "Acessar roteador" abre na porta que respondeu.
+
+    /**
+     * Teste de portas pelo service worker. Sem a permissão "Acesso à rede local" da extensão, NÃO pede nada
+     * sozinho: mostra "Ativar teste de portas (uma vez)", que abre a janelinha onde o Chrome pergunta. Ao voltar
+     * para o Zendesk (foco na janela), o teste roda de novo.
+     */
+    function testarPortasRoteador(ip, encerrada, forcar) {
+        estado.portasPedido = ip;
+        const dono = estado.seq;
+        const ainda = () => dono === estado.seq && !estado.destruido;
+        const acessoSimples = () => link('Acessar roteador', { titulo: `Abre http://${ip} numa guia nova`, onclick: () => abrirRoteador(`http://${ip}/`) });
+        elIpAcesso.replaceChildren(nota('Testando as portas do roteador…'));
+        enviarMensagem({ action: 'testarPortas', ip, forcar: forcar === true })
+            .then(r => {
+                if (!ainda()) return;
+                const d = r.data;
+                estado.portas = d;
+                const algumaAberta = d.portas.some(p => p.estado === 'aberta');
+                // Nenhuma porta respondeu e a permissão de rede local não está confirmada: oferece ativar
+                // (pode ser o Chrome barrando, não o roteador). Com alguma porta aberta, o resultado manda.
+                if (!algumaAberta && d.permissao === 'prompt') {
+                    estado.portasAguardandoPermissao = ip;
+                    renderPortas(d, encerrada);
+                    elIpAcesso.append(h('button', {
+                        type: 'button', class: 'link',
+                        title: 'Abre uma janelinha onde o Chrome pede UMA vez para a extensão "acessar dispositivos na rede local". Clique em Permitir; depois o teste roda sozinho em todos os tickets.',
+                        onclick: () => enviarMensagem({ action: 'ativarRedeLocal', ip }).catch(() => {})
+                    }, 'Ativar teste de portas (uma vez)'));
+                    return;
+                }
+                estado.portasAguardandoPermissao = null;
+                renderPortas(d, encerrada);
+                if (!algumaAberta && d.permissao === 'denied') {
+                    elIpAcesso.append(h('span', { class: 'detalhe', title:
+                        'Para liberar: abra chrome://settings/content › Acesso à rede local e remova o bloqueio do "Assistente de Diagnóstico Zendesk". Depois recarregue o Zendesk.' },
+                    'rede local bloqueada no Chrome (passe o mouse)'));
+                }
+            })
+            .catch(e => {
+                if (!ainda()) return;
+                estado.portasPedido = null;
+                elIpAcesso.replaceChildren(acessoSimples(), h('span', { class: 'detalhe' }, `Teste de portas indisponível: ${e.message}`));
+            });
+    }
+
+    function renderPortas(r, encerrada) {
+        const por = e => r.portas.filter(p => p.estado === e).map(p => p.porta);
+        const abertas = r.portas.filter(p => p.estado === 'aberta');
+        const dica = [
+            `Portas testadas em ${r.ip} (${Math.round(r.duracaoMs / 100) / 10} s):`,
+            `abertas (web): ${por('aberta').join(', ') || 'nenhuma'}`,
+            `fechadas ou não-web: ${por('fechada').join(', ') || '—'}`,
+            `sem resposta: ${por('sem-resposta').join(', ') || '—'}`,
+            `HTTPS inconclusiva (certificado): ${por('inconclusiva').join(', ') || '—'}`,
+            `não testáveis no navegador: ${por('nao-testavel').join(', ') || '—'} (SSH/Telnet bloqueadas pelo Chrome)`,
+            'Portas abertas que não usam web (ex.: Winbox 8291) aparecem como fechadas.',
+            (() => { // diagnóstico: erro e tempo da porta 80
+                const p80 = r.portas.find(p => p.porta === 80);
+                return p80 ? `Porta 80: ${p80.estado} em ${p80.ms} ms${p80.erro ? ` — erro do navegador: ${p80.erro}` : ''}` : '';
+            })(),
+            encerrada ? 'Atenção: sessão encerrada — o IP pode ter mudado.' : ''
+        ].filter(Boolean).join('\n');
+        const repetir = h('button', { type: 'button', class: 'link', title: 'Testar as portas de novo',
+            onclick: () => testarPortasRoteador(r.ip, encerrada, true) }, 'testar de novo');
+        if (abertas.length) {
+            const [primeira, ...outras] = abertas;
+            elIpAcesso.replaceChildren(
+                h('span', { class: 'portas-ok', title: dica }, `✓ porta ${abertas.map(p => p.porta).join(', ')}`),
+                link('Acessar roteador', { titulo: `Abre ${primeira.url} numa guia nova`, onclick: () => abrirRoteador(primeira.url) }),
+                ...outras.slice(0, 3).map(p => h('button', { type: 'button', class: 'link', title: `Abre ${p.url}`,
+                    onclick: () => abrirRoteador(p.url) }, `:${p.porta}`)));
+        } else {
+            elIpAcesso.replaceChildren(
+                h('span', { class: 'portas-nao', title: dica }, `✗ nenhuma porta web respondeu (${r.portas.length} testadas)`),
+                repetir);
         }
     }
 
