@@ -1,0 +1,81 @@
+# Publica uma release da extensão quando uma tag "v*" é enviada (ex.: v6.9.1).
+#
+# Passos: confere o formato da tag → confere tag = versão do manifest.json → roda os testes →
+# monta um .zip só com os arquivos da extensão → confere que tudo o que o manifest usa está no .zip →
+# cria a release com o .zip anexado. O aviso de versão nova da extensão lê esta release.
+#
+# Segurança: o nome da tag entra nos comandos só por variável de ambiente (nunca interpolado no script)
+# e é validado por expressão regular antes de qualquer uso. O token é o GITHUB_TOKEN do próprio workflow.
+
+name: Release da extensão
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # necessário para criar a release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Conferir a tag e a versão do manifest.json
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+(\.[0-9]+){0,3}$'; then
+            echo "::error::Tag '$TAG' fora do formato vX.Y.Z (ex.: v6.9.1)."
+            exit 1
+          fi
+          VERSAO_TAG="${TAG#v}"
+          VERSAO_MANIFEST="$(node -p "require('./manifest.json').version")"
+          echo "Tag: $VERSAO_TAG | manifest.json: $VERSAO_MANIFEST"
+          if [ "$VERSAO_TAG" != "$VERSAO_MANIFEST" ]; then
+            echo "::error::A tag ($TAG) não bate com a versão do manifest.json ($VERSAO_MANIFEST). Atualize o manifest.json, faça commit e crie a tag de novo."
+            exit 1
+          fi
+
+      - name: Rodar os testes
+        run: node --test tests/amigo-core.test.js tests/texto-diagnostico.test.js
+
+      - name: Montar o .zip só com os arquivos da extensão
+        run: |
+          mkdir -p pacote dist
+          cp manifest.json background.js content.js amigo-core.js pacote/
+          cp -r lib pacote/
+          if [ -d icons ]; then cp -r icons pacote/; fi
+          ZIP="dist/assistente-diagnostico-zendesk-${TAG}.zip"
+          (cd pacote && zip -r -X "../${ZIP}" .)
+          echo "ZIP=${ZIP}" >> "$GITHUB_ENV"
+          unzip -l "${ZIP}"
+
+      - name: Conferir que o .zip tem tudo o que o manifest.json usa
+        run: |
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const m = JSON.parse(fs.readFileSync("pacote/manifest.json", "utf8"));
+            const usados = [m.background && m.background.service_worker,
+              ...(m.content_scripts || []).flatMap(c => c.js || [])].filter(Boolean);
+            const faltando = usados.filter(f => !fs.existsSync(path.join("pacote", f)));
+            if (faltando.length) { console.error("Faltando no .zip:", faltando.join(", ")); process.exit(1); }
+            console.log("OK:", usados.join(", "));
+          '
+
+      - name: Publicar a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" "$ZIP" \
+            --title "Assistente de Diagnóstico Zendesk $TAG" \
+            --generate-notes \
+            --verify-tag

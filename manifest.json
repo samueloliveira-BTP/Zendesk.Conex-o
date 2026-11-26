@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Assistente de Diagnóstico Zendesk",
+  "version": "6.9.0",
+  "description": "Diagnóstico de conexões no Zendesk com dados da Plataforma Amigo e da ONU (AutoISP)",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://plataforma.sejaamigo.com.br/*",
+    "https://autoisp.brasiltecpar.com.br/*",
+    "https://api.macvendors.com/*",
+    "https://api.github.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Assistente de Diagnóstico Zendesk"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://autoisp.brasiltecpar.com.br/contracted_services/*"],
+      "js": ["lib/html2canvas.min.js"]
+    },
+    {
+      "matches": [
+        "https://brasiltecparsupport.zendesk.com/agent/*",
+        "https://plataforma.sejaamigo.com.br/*",
+        "https://autoisp.brasiltecpar.com.br/client_search*",
+        "https://autoisp.brasiltecpar.com.br/contracted_services/*"
+      ],
+      "js": ["content.js"]
+    }
+  ]
+}

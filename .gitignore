@@ -1,0 +1,19 @@
+# Fora do repositório público
+# - backup antigo e vídeo do tutorial: pesados e podem conter telas com dados reais de clientes (LGPD)
+backup-*/
+Tutorial/
+
+# Artefatos gerados (o .zip da release é montado pelo GitHub Actions)
+*.zip
+dist/
+pacote/
+node_modules/
+
+# Configurações locais
+.claude/
+.vscode/
+.idea/
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store

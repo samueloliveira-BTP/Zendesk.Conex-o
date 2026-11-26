@@ -1,0 +1,374 @@
+/**
+ * Assistente de Diagnóstico Zendesk — service worker (v5.1, dados da Plataforma Amigo)
+ *
+ * Centraliza as chamadas de rede. Toda a leitura das respostas da Amigo é feita aqui (amigo-core.js),
+ * fora da página do Zendesk: o Zendesk recebe só um objeto pequeno e pronto (não trava a interface).
+ *
+ * Rotas (campo "action" da mensagem):
+ *  - consultarCliente   → diagnóstico da etiqueta (conexão, status Online/Offline, equipamento, splitter)
+ *  - consultarOnu       → dados da ONU já coletados pelo AutoISP (status, último sinal RX, última queda)
+ *  - nomeSplitter       → nome do splitter da conexão (prioridade baixa)
+ *  - buscarSplitters    → pesquisa de splitters pelo nome
+ *  - clientesSplitter   → clientes de um splitter
+ *  - statusConexao      → "Status da Conexão" (RADIUS) de uma conexão (verificação em massa do splitter; prioridade baixa)
+ *  - fabricanteMac      → fabricante pelo prefixo OUI (com cache e fila de 1 req/s)
+ *  - abordagem          → confere a Abordagem da Amigo (Tecnologia, Slot/Porta OLT, ID ONU) com o AutoISP — só leitura, nunca grava
+ *  - statusAtualizacao  → versão nova publicada no GitHub (aviso no painel; ver "Aviso de versão nova")
+ *  - abrirAbordagemPreenchida / preencherTarefa → abre a edição da Amigo já preenchida (o atendente é quem salva)
+ *  - ipOlt              → IP da OLT (AutoISP pelo ID da OLT; reserva: Amigo, Ativos de Rede pelo nome do uPE)
+ *  - printAutoIsp       → print da página da ONU no AutoISP (aba em segundo plano; ver "Print" abaixo)
+ *  - printTarefa / printPronto / printErro → conversa com a aba do AutoISP
+ */
+'use strict';
+
+importScripts('amigo-core.js');
+
+const { criarClienteAmigo, criarClienteAutoIsp, ErroAmigo, compararAbordagem } = self.AmigoCore;
+const amigo = criarClienteAmigo({ fetchFn: (url, opcoes) => fetch(url, opcoes) });
+const autoisp = criarClienteAutoIsp({ fetchFn: (url, opcoes) => fetch(url, opcoes) });
+
+const CACHE_MAC_MS = 30 * 24 * 3600 * 1000;
+const esperar = ms => new Promise(r => setTimeout(r, ms));
+
+// Fila da API de fabricantes (plano gratuito aceita ~1 requisição/s).
+let filaMac = Promise.resolve();
+function enfileirarMac(tarefa) {
+    const resultado = filaMac.then(tarefa);
+    filaMac = resultado.catch(() => {}).then(() => esperar(1100));
+    return resultado;
+}
+
+// ==========================================
+// Print da página da ONU no AutoISP
+// ==========================================
+//
+// Abre a página da ONU numa aba em segundo plano (#zx-print=<token>). Lá o content.js espera o "Status GPON"
+// (e a leitura nova da OLT, se vier), desenha a parte de cima da página numa imagem (html2canvas, sem
+// depender da aba estar visível) e devolve a imagem. A aba fecha sozinha. Só leitura no AutoISP.
+
+const TEMPO_PRINT_MS = 60000;
+const LINK_ONU_AUTOISP = /^https:\/\/autoisp\.brasiltecpar\.com\.br\/contracted_services\/\d{1,12}$/;
+const IMAGEM_PRINT = /^data:image\/(?:jpeg|png);base64,[A-Za-z0-9+/=]+$/;
+const TAMANHO_MAX_PRINT = 12 * 1024 * 1024;
+const prints = new Map(); // token → tarefa
+
+function tirarPrintAutoIsp(link, janela) {
+    return new Promise((resolve, reject) => {
+        const token = crypto.randomUUID();
+        const t = { token, tabId: null };
+        const fechar = () => { if (t.tabId !== null) chrome.tabs.remove(t.tabId).catch(() => {}); };
+        t.terminar = (erro, valor) => {
+            if (!prints.has(token)) return;
+            prints.delete(token);
+            clearTimeout(t.timer);
+            fechar();
+            if (erro) reject(erro); else resolve(valor);
+        };
+        t.timer = setTimeout(() => t.terminar(new ErroAmigo('O AutoISP não terminou de carregar a página da ONU a tempo.', 'TIMEOUT')), TEMPO_PRINT_MS);
+        prints.set(token, t);
+        const opcoes = { url: `${link}#zx-print=${token}`, active: false };
+        if (Number.isInteger(janela)) opcoes.windowId = janela;
+        chrome.tabs.create(opcoes)
+            .then(tab => { t.tabId = tab.id; if (!prints.has(token)) fechar(); })
+            .catch(() => t.terminar(new ErroAmigo('Não foi possível abrir a página da ONU no AutoISP.', 'ABA')));
+    });
+}
+
+// Aba do print fechada antes do fim: avisa em vez de esperar o tempo-limite.
+chrome.tabs.onRemoved.addListener(tabId => {
+    for (const t of prints.values()) {
+        if (t.tabId === tabId) {
+            t.tabId = null;
+            t.terminar(new ErroAmigo('A aba do AutoISP foi fechada antes do print.', 'ABA'));
+        }
+    }
+});
+
+// ==========================================
+// Aviso de versão nova (GitHub Releases)
+// ==========================================
+//
+// A extensão é instalada "sem compactação" (fora da Chrome Web Store), então o Chrome não a atualiza sozinho.
+// Uma vez por dia (chrome.alarms) consulta a última release pública do repositório e compara com a versão
+// instalada. Havendo versão nova: "NEW" no ícone, aviso no painel do Zendesk e o clique no ícone abre o download.
+// Repositório público: a API do GitHub responde sem login (nenhum token na extensão).
+
+const REPO_GITHUB = 'samueloliveira-BTP/Zendesk.Conex-o';
+const URL_RELEASE_API = `https://api.github.com/repos/${REPO_GITHUB}/releases/latest`;
+const ORIGEM_DOWNLOAD = `https://github.com/${REPO_GITHUB}/`; // links aceitos (release ou .zip anexado)
+const ALARME_ATUALIZACAO = 'verificar-atualizacao';
+const INTERVALO_ATUALIZACAO_MIN = 24 * 60;
+
+/** "v6.9.0" / "6.9" → [6, 9, 0]; null se não for versão numérica. */
+function partesVersao(texto) {
+    const m = /^v?(\d{1,5}(?:\.\d{1,5}){0,3})$/i.exec(String(texto || '').trim());
+    return m ? m[1].split('.').map(Number) : null;
+}
+
+/** >0 se a > b, <0 se a < b, 0 se iguais (partes faltando valem 0: "6.9" = "6.9.0"). */
+function compararVersoes(a, b) {
+    const pa = partesVersao(a) || [], pb = partesVersao(b) || [];
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const d = (pa[i] || 0) - (pb[i] || 0);
+        if (d) return d;
+    }
+    return 0;
+}
+
+async function marcarAtualizacao(info) {
+    if (info) {
+        await chrome.storage.local.set({ atualizacao: info });
+        await chrome.action.setBadgeText({ text: 'NEW' });
+        await chrome.action.setBadgeBackgroundColor({ color: '#d92d20' });
+        await chrome.action.setTitle({ title: `Nova versão ${info.versao} disponível — clique para baixar` });
+    } else {
+        await chrome.storage.local.remove('atualizacao');
+        await chrome.action.setBadgeText({ text: '' });
+        await chrome.action.setTitle({ title: 'Assistente de Diagnóstico Zendesk' });
+    }
+}
+
+/** Consulta a última release. Falha de rede/limite da API: mantém o que já se sabia e tenta no próximo dia. */
+async function verificarAtualizacao() {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+        const resp = await fetch(URL_RELEASE_API, {
+            signal: ctrl.signal, credentials: 'omit', cache: 'no-store',
+            headers: { Accept: 'application/vnd.github+json' }
+        });
+        if (resp.status === 404) return marcarAtualizacao(null); // ainda não há release publicada
+        if (!resp.ok) return;
+        const rel = await resp.json();
+        const versao = String(rel && rel.tag_name || '').trim().replace(/^v/i, '');
+        const atual = chrome.runtime.getManifest().version;
+        if (!partesVersao(versao) || rel.draft || rel.prerelease || compararVersoes(versao, atual) <= 0) {
+            return marcarAtualizacao(null);
+        }
+        // Prefere o .zip anexado à release; senão a página da release. Só links do próprio repositório.
+        const zip = (Array.isArray(rel.assets) ? rel.assets : [])
+            .map(a => a && a.browser_download_url).find(u => typeof u === 'string' && /\.zip$/i.test(u) && u.startsWith(ORIGEM_DOWNLOAD));
+        const pagina = typeof rel.html_url === 'string' && rel.html_url.startsWith(ORIGEM_DOWNLOAD) ? rel.html_url : `${ORIGEM_DOWNLOAD}releases/latest`;
+        await marcarAtualizacao({ versao, url: zip || pagina, pagina, em: Date.now() });
+    } catch (e) {
+        // sem rede / GitHub fora: tenta de novo no próximo alarme
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function agendarVerificacao() {
+    chrome.alarms.create(ALARME_ATUALIZACAO, { delayInMinutes: 1, periodInMinutes: INTERVALO_ATUALIZACAO_MIN });
+}
+
+chrome.alarms.onAlarm.addListener(a => { if (a.name === ALARME_ATUALIZACAO) verificarAtualizacao(); });
+chrome.runtime.onStartup.addListener(() => { agendarVerificacao(); verificarAtualizacao(); });
+
+// Clique no ícone: abre o download da versão nova (sem versão nova, a página das releases).
+chrome.action.onClicked.addListener(async () => {
+    const { atualizacao } = await chrome.storage.local.get('atualizacao');
+    const url = atualizacao && typeof atualizacao.url === 'string' && atualizacao.url.startsWith(ORIGEM_DOWNLOAD)
+        ? atualizacao.pagina || atualizacao.url
+        : `${ORIGEM_DOWNLOAD}releases`;
+    chrome.tabs.create({ url });
+});
+
+// Abordagem: páginas de edição da Amigo abertas para o atendente completar (token → {idConexao, preencher, tabId}).
+const VALIDADE_PREENCHIMENTO_MS = 2 * 60 * 1000;
+const preenchimentos = new Map();
+
+/** Tarefa de print do token, só para a aba que a extensão abriu. */
+function printDaAba(token, sender) {
+    const t = typeof token === 'string' ? prints.get(token) : null;
+    if (!t || !sender.tab || sender.tab.id !== t.tabId) throw new ErroAmigo('Tarefa desconhecida.', 'ENTRADA');
+    return t;
+}
+
+const handlers = {
+    async consultarCliente({ etiqueta, forcar }) {
+        return { data: await amigo.consultarCliente(etiqueta, { forcar: forcar === true }) };
+    },
+
+    /** IP da OLT: AutoISP pelo ID (rápido); se não houver, Amigo pelo nome do Ponto de acesso (uPE). */
+    async ipOlt({ oltId, pontoAcesso, olt }) {
+        let erro = null;
+        if (oltId) {
+            try {
+                const r = await autoisp.ipOlt(oltId);
+                if (r) return { data: { ip: r.ip, nome: r.hostname, fonte: 'AutoISP' } };
+            } catch (e) { erro = e; }
+        }
+        const nomes = [...new Set([pontoAcesso, olt].map(n => String(n || '').trim()).filter(Boolean))];
+        for (const nome of nomes) {
+            try {
+                const r = await amigo.ipDoUpe(nome);
+                if (r) return { data: { ip: r.ip, nome, fonte: 'Amigo' } };
+            } catch (e) { erro = erro || e; }
+        }
+        if (erro) throw erro;
+        return { data: null };
+    },
+
+    async printAutoIsp({ link }, sender) {
+        if (typeof link !== 'string' || !LINK_ONU_AUTOISP.test(link)) throw new ErroAmigo('Página da ONU inválida.', 'ENTRADA');
+        const dataUrl = await tirarPrintAutoIsp(link, sender.tab && sender.tab.windowId);
+        return { dataUrl };
+    },
+
+    async printTarefa({ token }, sender) {
+        printDaAba(token, sender);
+        return {};
+    },
+
+    async printPronto({ token, dataUrl }, sender) {
+        const t = printDaAba(token, sender);
+        if (typeof dataUrl !== 'string' || dataUrl.length > TAMANHO_MAX_PRINT || !IMAGEM_PRINT.test(dataUrl)) {
+            t.terminar(new ErroAmigo('O print gerado é inválido ou grande demais.', 'FORMATO'));
+        } else {
+            t.terminar(null, dataUrl);
+        }
+        return {};
+    },
+
+    async printErro({ token, mensagem }, sender) {
+        const t = printDaAba(token, sender);
+        t.terminar(new ErroAmigo(String(mensagem || 'Falha ao gerar o print.').slice(0, 200), 'PAGINA'));
+        return {};
+    },
+
+    async consultarOnu({ etiqueta, usuario, forcar, aoVivo }) {
+        // aoVivo: pede leitura nova na OLT (como ao abrir a página do AutoISP) — ~15 s.
+        return { data: await autoisp.consultarOnu(etiqueta, usuario, { forcar: forcar === true, aoVivo: aoVivo === true }) };
+    },
+
+    async nomeSplitter({ idConexao, ctoId }) {
+        return { nome: await amigo.nomeSplitter(idConexao, ctoId) };
+    },
+
+    async buscarSplitters({ termo, pagina }) {
+        return { data: await amigo.buscarSplitters(termo, pagina) };
+    },
+
+    async clientesSplitter({ ctoId }) {
+        return { data: await amigo.clientesDoSplitter(ctoId) };
+    },
+
+    async statusConexao({ idConexao, usuarioPppoe }) {
+        // Verificação em massa: prioridade baixa (o ticket aberto passa na frente).
+        const r = await amigo.statusConexao({ idConexao, usuario: usuarioPppoe }, { prioridade: 'baixa' });
+        return { data: { estado: r.estado, motivo: r.motivo } };
+    },
+
+    async fabricanteMac({ mac }) {
+        const hex = String(mac || '').toUpperCase().replace(/[^0-9A-F]/g, '');
+        if (hex.length !== 12) return { fabricante: 'Desconhecido' };
+        // Envia só o prefixo do fabricante (OUI), nunca o MAC completo do cliente.
+        const oui = hex.slice(0, 6);
+        const chave = 'oui_' + oui;
+        const salvo = (await chrome.storage.local.get(chave))[chave];
+        if (salvo && Date.now() - salvo.at < CACHE_MAC_MS) return { fabricante: salvo.v };
+
+        const fabricante = await enfileirarMac(async () => {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 10000);
+            try {
+                const resp = await fetch('https://api.macvendors.com/' + encodeURIComponent(oui.match(/../g).join(':')), { signal: ctrl.signal });
+                if (resp.status === 404) return 'Desconhecido';
+                if (!resp.ok) throw new ErroAmigo('Consulta de fabricante indisponível.');
+                return (await resp.text()).trim().slice(0, 100) || 'Desconhecido';
+            } finally {
+                clearTimeout(timer);
+            }
+        });
+        await chrome.storage.local.set({ [chave]: { v: fabricante, at: Date.now() } });
+        return { fabricante };
+    },
+
+    /**
+     * Conferência da Abordagem para o painel (dados em cache; a página /edit em prioridade baixa).
+     * forcar: relê a página /edit (o atendente voltou da Amigo, talvez tenha salvado).
+     */
+    async abordagem({ etiqueta, usuario, forcar }) {
+        const cli = await amigo.consultarCliente(etiqueta);
+        const onu = await autoisp.consultarOnu(etiqueta, usuario).catch(e => {
+            if (e.codigo === 'NAO_ENCONTRADO') return null; // sem ONU no AutoISP: itens "sem dado"
+            throw e;
+        });
+        const ab = await amigo.abordagem(cli.conexao.id, forcar === true ? { prioridade: 'alta', forcar: true } : undefined);
+        return { data: { idConexao: cli.conexao.id, ...compararAbordagem(ab, cli.conexao, onu) } };
+    },
+
+    /**
+     * Abre a página de edição da conexão na Amigo, à vista do atendente, e deixa a aba preencher os campos
+     * vazios da Abordagem com os dados do AutoISP. QUEM SALVA É O ATENDENTE: a extensão nunca clica em Salvar.
+     * Os valores ficam aqui (token de uso único), não na URL.
+     */
+    async abrirAbordagemPreenchida({ etiqueta, usuario, idConexao }, sender) {
+        const cli = await amigo.consultarCliente(etiqueta, { forcar: true });
+        if (cli.conexao.id !== String(idConexao)) throw new ErroAmigo('A conexão desta etiqueta mudou. Clique em Atualizar.', 'MUDOU');
+        const onu = await autoisp.consultarOnu(etiqueta, usuario);
+        const ab = await amigo.abordagem(cli.conexao.id, { prioridade: 'alta', forcar: true });
+        const plano = compararAbordagem(ab, cli.conexao, onu);
+        if (!plano.totalPreencher) throw new ErroAmigo('A Abordagem já está completa na Amigo. Clique em Atualizar.', 'MUDOU');
+        const token = crypto.randomUUID();
+        const p = { idConexao: cli.conexao.id, preencher: plano.preencher, tabId: null };
+        preenchimentos.set(token, p);
+        setTimeout(() => preenchimentos.delete(token), VALIDADE_PREENCHIMENTO_MS);
+        // /view é a página completa (menu, estilos e o formulário de edição carregado nela). A /edit sozinha
+        // é só o pedaço do formulário, sem CSS — abre "quebrada" (visto em 26/11/2026).
+        const opcoes = { url: `${self.AmigoCore.AMIGO_ORIGEM}/pt/network-documentation/connection/${cli.conexao.id}/view#zx-preencher=${token}`, active: true };
+        if (sender.tab) {
+            opcoes.windowId = sender.tab.windowId;
+            opcoes.index = sender.tab.index + 1;
+            opcoes.openerTabId = sender.tab.id;
+        }
+        const tab = await chrome.tabs.create(opcoes).catch(() => null);
+        if (!tab) { preenchimentos.delete(token); throw new ErroAmigo('Não foi possível abrir a página da Amigo.', 'ABA'); }
+        p.tabId = tab.id;
+        return { preencher: plano.preencher };
+    },
+
+    /** Versão nova disponível (para o aviso no painel do Zendesk); null se a instalada é a mais recente. */
+    async statusAtualizacao() {
+        const { atualizacao } = await chrome.storage.local.get('atualizacao');
+        const atual = chrome.runtime.getManifest().version;
+        if (!atualizacao || compararVersoes(atualizacao.versao, atual) <= 0) return { data: null };
+        return { data: { versao: atualizacao.versao, atual, url: atualizacao.url } };
+    },
+
+    /** A aba da Amigo pede os valores (uma vez só, e só a aba que a extensão abriu). */
+    async preencherTarefa({ token }, sender) {
+        const p = typeof token === 'string' ? preenchimentos.get(token) : null;
+        if (!p || !sender.tab || sender.tab.id !== p.tabId) throw new ErroAmigo('Link de preenchimento expirado. Use o botão no Zendesk de novo.', 'ENTRADA');
+        preenchimentos.delete(token);
+        return { idConexao: p.idConexao, preencher: p.preencher };
+    }
+
+
+};
+
+// Versões anteriores guardavam configurações, preferências e dados do AutoISP/n8n no storage.
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.storage.local.remove(['config', 'painelRecolhido', 'secoesAbertas']).catch(() => {});
+    chrome.storage.session.remove('acesso').catch(() => {});
+    // Instalou/atualizou: agenda a verificação diária e já confere (limpa o "NEW" se esta já é a versão nova).
+    agendarVerificacao();
+    verificarAtualizacao();
+});
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    // Aceita apenas mensagens da própria extensão e ações conhecidas.
+    if (sender.id !== chrome.runtime.id) return false;
+    const acao = request && request.action;
+    if (typeof acao !== 'string' || !Object.prototype.hasOwnProperty.call(handlers, acao)) return false;
+
+    handlers[acao](request, sender)
+        .then(resultado => sendResponse({ success: true, ...resultado }))
+        .catch(e => sendResponse({
+            success: false,
+            // Só mensagens nossas chegam à tela; detalhes internos de erros inesperados ficam no service worker.
+            error: e instanceof ErroAmigo ? e.message : 'Erro inesperado na extensão.',
+            codigo: (e && e.codigo) || null
+        }));
+    return true; // resposta assíncrona
+});
