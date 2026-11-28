@@ -69,7 +69,8 @@ do cliente (dados da Plataforma Amigo e do AutoISP), com atalhos para as ferrame
 - [x] Não uso nem transfiro dados para avaliar crédito ou conceder empréstimos
 
 **URL da política de privacidade:**
-`https://github.com/samueloliveira-BTP/Zendesk.Conex-o/blob/main/PRIVACIDADE.md`
+`https://raw.githubusercontent.com/samueloliveira-BTP/Zendesk.Conex-o/main/PRIVACIDADE.md`
+(o link github.com/.../blob/... foi recusado pela loja: "Não foi possível acessar")
 (só depois do texto validado pelo responsável de LGPD/Jurídico e do push)
 
 ## 4. Distribuição (aba "Distribuição")

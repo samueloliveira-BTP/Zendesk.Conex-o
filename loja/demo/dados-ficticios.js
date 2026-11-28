@@ -55,7 +55,8 @@
         },
         ipOlt: () => ({ data: { ip: '203.0.113.10', fonte: 'AutoISP' } }),
         nomeSplitter: () => ({ nome: 'CTO-DEMO-07' }),
-        fabricanteMac: () => ({ fabricante: 'Fabricante Exemplo' }),
+        // ?cenario=mikrotik → fabricante MikroTik (sem teste de portas)
+        fabricanteMac: () => ({ fabricante: cenario === 'mikrotik' ? 'Routerboard.com' : 'Fabricante Exemplo' }),
         testarPortas: () => ({
             data: {
                 ip: IP_CLIENTE, permissao: 'granted', duracaoMs: 2100,

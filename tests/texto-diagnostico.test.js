@@ -114,3 +114,12 @@ test('fabricantePeloSerial', () => {
     assert.equal(fabricantePeloSerial(''), '');
     assert.equal(fabricantePeloSerial(null), '');
 });
+
+test('ehMikrotik: reconhece MikroTik pelo fabricante do MAC ou pelo modelo', () => {
+    const { ehMikrotik } = contexto;
+    assert.equal(ehMikrotik('Routerboard.com'), true);
+    assert.equal(ehMikrotik('Mikrotikls SIA'), true);
+    assert.equal(ehMikrotik('Fabricante Exemplo', 'RB750Gr3 MikroTik'), true);
+    assert.equal(ehMikrotik('Fabricante Exemplo', 'Roteador Wi-Fi 6', ''), false);
+    assert.equal(ehMikrotik(undefined, null, ''), false);
+});

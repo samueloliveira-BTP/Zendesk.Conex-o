@@ -82,6 +82,18 @@ const buscarFabricante = mac =>
     enviarMensagem({ action: 'fabricanteMac', mac }).then(r => r.fabricante).catch(() => 'Desconhecido');
 
 /**
+ * Roteador MikroTik? Pelo fabricante do MAC (a base de OUI registra a MikroTik como "Routerboard.com" ou
+ * "Mikrotikls SIA") ou pelo modelo/tipo cadastrado na Amigo. MikroTik não abre página web por padrão (o
+ * acesso é pelo Winbox, porta 8291, que o navegador não testa): nesse caso o painel não faz teste de portas.
+ */
+function ehMikrotik(...textos) {
+    return textos.some(t => /mikrotik|routerboard/i.test(String(t || '')));
+}
+
+/** Espera máxima pelo fabricante do MAC antes de testar as portas (a API externa aceita ~1 consulta/s). */
+const ESPERA_FABRICANTE_MS = 5000;
+
+/**
  * Cria um elemento DOM com segurança. Filhos string viram nós de texto (nunca HTML).
  * Props: style (cssText), class, on<evento> (listener) e demais atributos.
  */
@@ -264,6 +276,7 @@ svg { display: block; flex: none; }
 .ip-acesso { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 8px; margin-top: -2px; font-size: .857em; }
 .ip-acesso .portas-ok { color: var(--ok); font-weight: 600; cursor: help; }
 .ip-acesso .portas-nao { color: var(--suave); cursor: help; }
+.ip-acesso .mikrotik { color: var(--texto); font-weight: 600; cursor: help; }
 .ip-acesso:empty { display: none; }
 .motivo { font-size: .857em; color: var(--suave); }
 
@@ -1133,7 +1146,23 @@ function criarPainelTicket(campoEl) {
 
         const sEquip = secao('Equipamento');
         const fabricante = h('span', { class: 'detalhe' }, d.mac ? 'Identificando fabricante…' : '');
-        if (d.mac) buscarFabricante(d.mac).then(f => { fabricante.textContent = f === 'Desconhecido' ? 'Fabricante desconhecido' : f; });
+        // Fabricante: aparece no MAC e decide o teste de portas (MikroTik não testa). Sem resposta em 5 s,
+        // segue como desconhecido para o teste não ficar preso.
+        estado.fabricante = d.mac ? undefined : null;
+        if (d.mac) {
+            const dono = estado.seq;
+            const decidir = f => {
+                if (dono !== estado.seq || estado.destruido || estado.fabricante !== undefined) return;
+                estado.fabricante = f;
+                atualizarIp();
+            };
+            buscarFabricante(d.mac).then(f => {
+                fabricante.textContent = f === 'Desconhecido' ? 'Fabricante desconhecido' : f;
+                if (dono === estado.seq && estado.fabricante === 'Desconhecido') estado.fabricante = undefined; // chegou depois da espera
+                decidir(f);
+            });
+            setTimeout(() => decidir('Desconhecido'), ESPERA_FABRICANTE_MS);
+        }
         sEquip.corpo.append(grade(
             campo('Usuário equip.', d.usuarioEquip, { mono: true, copiar: true }),
             campo('Senha equip.', null, { no: campoSenha(d.senhaEquip) }),
@@ -1434,6 +1463,15 @@ function criarPainelTicket(campoEl) {
             // Só com sessão ATIVA: o "Último IP" de uma conexão desconectada pode já ser de outro cliente,
             // então não testa portas nem oferece "Acessar roteador" (pedido do usuário em 26/11/2026).
             if (!IPV4_VALIDO.test(ip) || encerrada) { elIpAcesso.replaceChildren(); return; }
+            const a = estado.amigo || {};
+            if (ehMikrotik(estado.fabricante, a.modelo, a.tipoEquip)) {
+                elIpAcesso.replaceChildren(h('span', {
+                    class: 'mikrotik',
+                    title: 'Roteador MikroTik (identificado pelo MAC/modelo). Ele não abre página web por padrão: o acesso é pelo Winbox (porta 8291), que o navegador não consegue testar. Por isso o teste de portas não é feito.'
+                }, 'MikroTik — acesso pelo Winbox (sem teste de portas)'));
+                return;
+            }
+            if (estado.fabricante === undefined) { elIpAcesso.replaceChildren(nota('Identificando o roteador…')); return; }
             if (estado.portas && estado.portas.ip === ip) renderPortas(estado.portas, encerrada);
             else if (estado.portasPedido !== ip) testarPortasRoteador(ip, encerrada, false);
         }
